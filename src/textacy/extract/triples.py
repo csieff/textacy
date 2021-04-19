@@ -1,9 +1,12 @@
 """
-Triples
+Triples and Doubles
 -------
 
 :mod:`textacy.extract.triples`: Extract structured triples from a document or sentence
 through rule-based pattern-matching of the annotated tokens.
+
+csieff: modified textacy subject_verb_object_triples to extract subject and verb doubles
+
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ _CLAUSAL_SUBJ_DEPS = {csubj, csubjpass}
 _ACTIVE_SUBJ_DEPS = {csubj, nsubj}
 _VERB_MODIFIER_DEPS = {aux, auxpass, neg}
 
+
 SVOTriple: Tuple[List[Token], List[Token], List[Token]] = collections.namedtuple(
     "SVOTriple", ["subject", "verb", "object"]
 )
@@ -37,6 +41,10 @@ DQTriple: Tuple[List[Token], List[Token], Span] = collections.namedtuple(
     "DQTriple", ["speaker", "cue", "content"]
 )
 
+# added new doubles type:
+SVDouble: Tuple[List[Token], List[Token]] = collections.namedtuple(
+    "SVDouble", ["subject", "verb"]
+)
 
 def subject_verb_object_triples(doclike: types.DocLike) -> Iterable[SVOTriple]:
     """
@@ -112,6 +120,57 @@ def subject_verb_object_triples(doclike: types.DocLike) -> Iterable[SVOTriple]:
                     object=sorted(so_dict["objects"], key=attrgetter("i")),
                 )
 
+def subject_verb_doubles(doclike: types.DocLike) -> Iterable[SVDouble]:
+    """
+    Extract an ordered sequence of subject-verb doubles from a document
+    or sentence.
+
+    Args:
+        doclike
+
+    Yields:
+        Next SV double as (subject, verb), in approximate order of appearance.
+    """
+    if isinstance(doclike, Span):
+        sents = [doclike]
+    else:
+        sents = doclike.sents
+
+    for sent in sents:
+        # connect subjects to direct verb heads
+        # and expand them to include conjuncts, compound nouns, ...
+        verb_sos = collections.defaultdict(lambda: collections.defaultdict(set))
+        for tok in sent:
+            head = tok.head
+            # ensure entry for all verbs, even if empty
+            # to catch conjugate verbs without direct subject deps
+            if tok.pos == VERB:
+                _ = verb_sos[tok]
+            # nominal subject of active or passive verb
+            if tok.dep in _NOMINAL_SUBJ_DEPS:
+                if head.pos == VERB:
+                    verb_sos[head]["subjects"].update(expand_noun(tok))
+            # clausal subject of active or passive verb
+            elif tok.dep in _CLAUSAL_SUBJ_DEPS:
+                if head.pos == VERB:
+                    verb_sos[head]["subjects"].update(tok.subtree)
+
+        # fill in any indirect relationships connected via verb conjuncts
+        for verb, so_dict in verb_sos.items():
+            conjuncts = verb.conjuncts
+            if so_dict.get("subjects"):
+                for conj in conjuncts:
+                    conj_so_dict = verb_sos.get(conj)
+                    if conj_so_dict and not conj_so_dict.get("subjects"):
+                        conj_so_dict["subjects"].update(so_dict["subjects"])
+
+        # expand verbs and restructure into sv doubles
+        for verb, so_dict in verb_sos.items():
+            if so_dict["subjects"]:
+                yield SVDouble(
+                    subject=sorted(so_dict["subjects"], key=attrgetter("i")),
+                    verb=sorted(expand_verb(verb), key=attrgetter("i"))
+                )
 
 def semistructured_statements(
     doclike: types.DocLike,
